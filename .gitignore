@@ -1,2 +1,4 @@
 .idea/
 wasm/target
+target/*
+Cargo.lock*
