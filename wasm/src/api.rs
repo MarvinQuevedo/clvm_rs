@@ -5,7 +5,6 @@ use js_sys::{Array};
 use crate::lazy_node::LazyNode;
 use clvmr::allocator::Allocator;
 use clvmr::chia_dialect::ChiaDialect;
-use clvmr::chia_dialect::NO_NEG_DIV as _no_neg_div;
 use clvmr::chia_dialect::NO_UNKNOWN_OPS as _no_unknown_ops;
 use clvmr::cost::Cost;
 use clvmr::node::Node;
@@ -23,9 +22,6 @@ pub struct Flag;
 
 #[wasm_bindgen]
 impl Flag {
-    #[wasm_bindgen]
-    pub fn no_neg_div() -> u32 { _no_neg_div }
-
     #[wasm_bindgen]
     pub fn no_unknown_ops() -> u32 { _no_unknown_ops }
 }
@@ -52,7 +48,6 @@ pub fn run_clvm(program: &[u8], args: &[u8]) -> Vec<u8> {
         program,
         args,
         max_cost,
-        None,
     );
     match r {
         Ok(reduction) => node_to_bytes(&Node::new(&allocator, reduction.1)).unwrap(),
@@ -78,7 +73,6 @@ pub fn run_chia_program(
         program,
         args,
         max_cost,
-        None,
     );
     match r {
         Ok(reduction) => {

@@ -15,9 +15,11 @@ const APPLY_COST: Cost = 90;
 // mandatory base cost for every operator we execute
 const OP_COST: Cost = 1;
 
+#[cfg(feature = "pre-eval")]
 pub type PreEval =
     Box<dyn Fn(&mut Allocator, NodePtr, NodePtr) -> Result<Option<Box<PostEval>>, EvalErr>>;
 
+#[cfg(feature = "pre-eval")]
 pub type PostEval = dyn Fn(Option<NodePtr>);
 
 #[repr(u8)]
@@ -25,6 +27,8 @@ enum Operation {
     Apply,
     Cons,
     SwapEval,
+
+    #[cfg(feature = "pre-eval")]
     PostEval,
 }
 
@@ -59,14 +63,17 @@ impl Counters {
 struct RunProgramContext<'a, D> {
     allocator: &'a mut Allocator,
     dialect: &'a D,
-    pre_eval: Option<PreEval>,
-    posteval_stack: Vec<Box<PostEval>>,
     val_stack: Vec<NodePtr>,
     env_stack: Vec<NodePtr>,
     op_stack: Vec<Operation>,
     stack_limit: usize,
     #[cfg(feature = "counters")]
     pub counters: Counters,
+
+    #[cfg(feature = "pre-eval")]
+    pre_eval: Option<PreEval>,
+    #[cfg(feature = "pre-eval")]
+    posteval_stack: Vec<Box<PostEval>>,
 }
 
 fn augment_cost_errors(r: Result<Cost, EvalErr>, max_cost: NodePtr) -> Result<Cost, EvalErr> {
@@ -141,18 +148,40 @@ impl<'a, D: Dialect> RunProgramContext<'a, D> {
         Ok(())
     }
 
-    fn new(allocator: &'a mut Allocator, dialect: &'a D, pre_eval: Option<PreEval>) -> Self {
+    #[cfg(feature = "pre-eval")]
+    fn new_with_pre_eval(
+        allocator: &'a mut Allocator,
+        dialect: &'a D,
+        pre_eval: Option<PreEval>,
+    ) -> Self {
         RunProgramContext {
             allocator,
             dialect,
-            pre_eval,
-            posteval_stack: Vec::new(),
             val_stack: Vec::new(),
             env_stack: Vec::new(),
             op_stack: Vec::new(),
             stack_limit: dialect.stack_limit(),
             #[cfg(feature = "counters")]
             counters: Counters::new(),
+            pre_eval,
+            posteval_stack: Vec::new(),
+        }
+    }
+
+    fn new(allocator: &'a mut Allocator, dialect: &'a D) -> Self {
+        RunProgramContext {
+            allocator,
+            dialect,
+            val_stack: Vec::new(),
+            env_stack: Vec::new(),
+            op_stack: Vec::new(),
+            stack_limit: dialect.stack_limit(),
+            #[cfg(feature = "counters")]
+            counters: Counters::new(),
+            #[cfg(feature = "pre-eval")]
+            pre_eval: None,
+            #[cfg(feature = "pre-eval")]
+            posteval_stack: Vec::new(),
         }
     }
 
@@ -211,6 +240,7 @@ impl<'a, D: Dialect> RunProgramContext<'a, D> {
     }
 
     fn eval_pair(&mut self, program: NodePtr, env: NodePtr) -> Result<Cost, EvalErr> {
+        #[cfg(feature = "pre-eval")]
         if let Some(pre_eval) = &self.pre_eval {
             if let Some(post_eval) = pre_eval(self.allocator, program, env)? {
                 self.posteval_stack.push(post_eval);
@@ -322,6 +352,7 @@ impl<'a, D: Dialect> RunProgramContext<'a, D> {
                 }
                 Operation::Cons => self.cons_op()?,
                 Operation::SwapEval => augment_cost_errors(self.swap_eval_op(), max_cost_ptr)?,
+                #[cfg(feature = "pre-eval")]
                 Operation::PostEval => {
                     let f = self.posteval_stack.pop().unwrap();
                     let peek: Option<NodePtr> = self.val_stack.last().copied();
@@ -340,9 +371,21 @@ pub fn run_program<'a, D: Dialect>(
     program: NodePtr,
     env: NodePtr,
     max_cost: Cost,
+) -> Response {
+    let mut rpc = RunProgramContext::new(allocator, dialect);
+    rpc.run_program(program, env, max_cost)
+}
+
+#[cfg(feature = "pre-eval")]
+pub fn run_program_with_pre_eval<'a, D: Dialect>(
+    allocator: &'a mut Allocator,
+    dialect: &'a D,
+    program: NodePtr,
+    env: NodePtr,
+    max_cost: Cost,
     pre_eval: Option<PreEval>,
 ) -> Response {
-    let mut rpc = RunProgramContext::new(allocator, dialect, pre_eval);
+    let mut rpc = RunProgramContext::new_with_pre_eval(allocator, dialect, pre_eval);
     rpc.run_program(program, env, max_cost)
 }
 
@@ -353,9 +396,8 @@ pub fn run_program_with_counters<'a, D: Dialect>(
     program: NodePtr,
     env: NodePtr,
     max_cost: Cost,
-    pre_eval: Option<PreEval>,
 ) -> (Counters, Response) {
-    let mut rpc = RunProgramContext::new(allocator, dialect, pre_eval);
+    let mut rpc = RunProgramContext::new(allocator, dialect);
     let ret = rpc.run_program(program, env, max_cost);
     rpc.counters.atom_count = rpc.allocator.atom_count() as u32;
     rpc.counters.pair_count = rpc.allocator.pair_count() as u32;
@@ -701,7 +743,7 @@ fn test_run_program() {
 
         let dialect = ChiaDialect::new(0);
         println!("prg: {}", t.prg);
-        match run_program(&mut allocator, &dialect, program, args, t.cost, None) {
+        match run_program(&mut allocator, &dialect, program, args, t.cost) {
             Ok(Reduction(cost, prg_result)) => {
                 assert!(node_eq(&allocator, prg_result, expected_result.unwrap()));
                 assert_eq!(cost, t.cost);
@@ -709,8 +751,7 @@ fn test_run_program() {
                 // now, run the same program again but with the cost limit 1 too low, to
                 // ensure it fails with the correct error
                 let expected_cost_exceeded =
-                    run_program(&mut allocator, &dialect, program, args, t.cost - 1, None)
-                        .unwrap_err();
+                    run_program(&mut allocator, &dialect, program, args, t.cost - 1).unwrap_err();
                 assert_eq!(expected_cost_exceeded.1, "cost exceeded");
             }
             Err(err) => {
@@ -735,7 +776,7 @@ fn test_counters() {
     let cost = 15073165;
 
     let (counters, result) =
-        run_program_with_counters(&mut a, &ChiaDialect::new(0), program, args, cost, None);
+        run_program_with_counters(&mut a, &ChiaDialect::new(0), program, args, cost);
 
     assert_eq!(counters.val_stack_usage, 3015);
     assert_eq!(counters.env_stack_usage, 1005);
