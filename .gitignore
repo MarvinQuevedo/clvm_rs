@@ -3,3 +3,7 @@ wasm/target
 target/*
 Cargo.lock*
 /target
+.idea/
+wasm/target
+target/*
+Cargo.lock*
