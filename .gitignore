@@ -7,3 +7,4 @@ Cargo.lock*
 wasm/target
 target/*
 Cargo.lock*
+Cargo.lock
